@@ -18,3 +18,5 @@
   },
   "private": true
 }
+
+//npx expo install @expo/vector-icons

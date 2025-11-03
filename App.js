@@ -651,3 +651,9 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 });
+
+//npx expo install @expo/vector-icons
+//npx expo install expo-camera
+
+//npm install
+//npm start
