@@ -6,7 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -23,7 +22,6 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true,
       "permissions": [
         "CAMERA"
       ]
@@ -36,14 +34,6 @@
         "expo-camera",
         {
           "cameraPermission": "Permitir que $(PRODUCT_NAME) acceda a tu cámara"
-        }
-      ],
-      [
-        "expo-media-library",
-        {
-          "photosPermission": "Permitir que $(PRODUCT_NAME) acceda a tus fotos.",
-          "savePhotosPermission": "Permitir que $(PRODUCT_NAME) guardar fotos.",
-          "isAccessMediaLocationEnabled": true
         }
       ]
     ]

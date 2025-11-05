@@ -1,4 +1,4 @@
-import React, {useState, useEffect, useRef} from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, Alert, TextInput, ScrollView, Dimensions } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
@@ -24,19 +24,19 @@ export default function App() {
       }
     })();
   }, [permission]);
-
+  
   const handleLogin = () => {
     if (username === 'admin' && password === '1234') {
       setShowLogin(false);
-      setShowCamera(true); // Ir directamente a la cámara después del login
+      setShowCamera(true);
     } else {
       Alert.alert('Error', 'Usuario o contraseña incorrectos');
     }
   };
 
   function toggleCameraFacing() {
-    setFacing(current => (current === 'back' ? 'front' : 'back'));
-  }
+  setFacing(current => (current === 'back' ? 'front' : 'back'));
+}
 
   function openCamera() {
     setShowCamera(true);
@@ -283,7 +283,7 @@ export default function App() {
   }
 
   // Pantalla de cámara
-  if (showCamera) {
+  if (showCamera && permission) {
     return (
       <View style={styles.container}>
         <CameraView 
@@ -315,15 +315,25 @@ export default function App() {
     );
   }
 
+  // Si la cámara no tiene permisos
+  if (showCamera && permission?.granted) {
+    return (
+      <View style={styles.container}>
+        <Text>Se necesitan permisos de cámara</Text>
+      </View>
+    );
+  }
+
   return null;
 }
 
+// Los estilos se mantienen igual que antes...
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#FFFFFF',
   },
-  // Login Styles
+  // ... (todos tus estilos existentes se mantienen igual)
   loginContent: {
     flex: 1,
     backgroundColor: '#FFFFFF',
@@ -377,7 +387,6 @@ const styles = StyleSheet.create({
     marginTop: 20,
     textAlign: 'center',
   },
-  // Header
   header: {
     backgroundColor: '#FFFFFF',
     paddingTop: 60,
@@ -407,7 +416,6 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: 'bold',
   },
-  // Menú después del QR
   menuContent: {
     flex: 1,
     backgroundColor: '#FFFFFF',
@@ -469,7 +477,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
   },
-  // Horario
   scheduleContent: {
     flex: 1,
     backgroundColor: '#FFFFFF',
@@ -651,9 +658,3 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 });
-
-//npx expo install @expo/vector-icons
-//npx expo install expo-camera
-
-//npm install
-//npm start
