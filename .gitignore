@@ -39,3 +39,9 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Firebase
+service-account-key.json
+firebase-config.js
+.env
+.env.local
