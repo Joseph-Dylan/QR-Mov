@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, Alert, TextInput, ScrollView, Dimensions, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, Alert, TextInput, ScrollView, Dimensions, ActivityIndicator, FlatList } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 
 import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
 import { auth, db } from './utils/firebase';
-import { collection, doc, getDoc, getDocs, query, where, addDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, where, addDoc, orderBy, limit } from 'firebase/firestore';
 
 const { width } = Dimensions.get('window');
 
@@ -16,6 +16,8 @@ export default function App() {
   const [showMenu, setShowMenu] = useState(false);
   const [showLogin, setShowLogin] = useState(true);
   const [showInfo, setShowInfo] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [scannedStudentData, setScannedStudentData] = useState(null);
@@ -23,8 +25,14 @@ export default function App() {
   const [accreditedSubjects, setAccreditedSubjects] = useState([]);
   const [loading, setLoading] = useState(false);
   const [scanCooldown, setScanCooldown] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [consultationHistory, setConsultationHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const cameraRef = useRef(null);
   const lastScannedData = useRef('');
+  const searchTimeoutRef = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -140,30 +148,10 @@ export default function App() {
       console.log("Datos del estudiante:", studentData);
       setScannedStudentData(studentData);
 
-      const scheduleQuery = query(
-        collection(db, 'group_schedules'), 
-        where('groupId', '==', studentData.groupId)
-      );
-      const scheduleSnapshot = await getDocs(scheduleQuery);
-      const scheduleData = scheduleSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
+      await loadStudentData(boleta, studentData);
       
-      console.log("Horarios encontrados:", scheduleData);
+      await registerConsultation(boleta, studentData.name, 'qr_scan');
       
-      const organizedSchedule = organizeScheduleByTime(scheduleData);
-      setStudentSchedule(organizedSchedule);
-
-      const accreditedQuery = query(
-        collection(db, 'accredited_subjects'),
-        where('studentId', '==', boleta)
-      );
-      const accreditedSnapshot = await getDocs(accreditedQuery);
-      const accreditedData = accreditedSnapshot.docs.map(doc => doc.data());
-      console.log("Materias acreditadas:", accreditedData);
-      setAccreditedSubjects(accreditedData);
-
       await addDoc(collection(db, 'records'), {
         studentId: boleta,
         studentName: studentData.name,
@@ -187,6 +175,52 @@ export default function App() {
         setScanCooldown(false);
         lastScannedData.current = '';
       }, 2000);
+    }
+  };
+
+  const loadStudentData = async (boleta, studentData) => {
+    try {
+      const scheduleQuery = query(
+        collection(db, 'group_schedules'), 
+        where('groupId', '==', studentData.groupId)
+      );
+      const scheduleSnapshot = await getDocs(scheduleQuery);
+      const scheduleData = scheduleSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      
+      const organizedSchedule = organizeScheduleByTime(scheduleData);
+      setStudentSchedule(organizedSchedule);
+
+      const accreditedQuery = query(
+        collection(db, 'accredited_subjects'),
+        where('studentId', '==', boleta)
+      );
+      const accreditedSnapshot = await getDocs(accreditedQuery);
+      const accreditedData = accreditedSnapshot.docs.map(doc => doc.data());
+      setAccreditedSubjects(accreditedData);
+    } catch (error) {
+      console.error("Error cargando datos:", error);
+    }
+  };
+
+  const registerConsultation = async (studentId, studentName, consultationType) => {
+    try {
+      const user = auth.currentUser;
+      if (!user) return;
+      
+      await addDoc(collection(db, 'consultation_history'), {
+        studentId: studentId,
+        studentName: studentName,
+        prefectId: user.uid,
+        prefectEmail: user.email,
+        consultationType: consultationType,
+        timestamp: new Date(),
+        details: `Consulta ${consultationType === 'qr_scan' ? 'por QR' : 'manual'}`
+      });
+    } catch (error) {
+      console.error("Error registrando consulta:", error);
     }
   };
 
@@ -220,6 +254,95 @@ export default function App() {
     return Object.values(timeSlots).sort((a, b) => a.time.localeCompare(b.time));
   };
 
+  const searchStudents = async (queryText) => {
+    if (queryText.length < 2) {
+      setSearchResults([]);
+      return;
+    }
+
+    try {
+      setSearchLoading(true);
+      
+      const studentsRef = collection(db, 'students');
+      
+      const searchTermLower = queryText.toLowerCase();
+      const searchTermUpper = queryText.toUpperCase();
+      
+      const allStudentsSnapshot = await getDocs(studentsRef);
+      
+      const results = [];
+      
+      allStudentsSnapshot.docs.forEach(doc => {
+        const student = { id: doc.id, ...doc.data() };
+        const studentNameLower = student.name ? student.name.toLowerCase() : '';
+        const studentBoleta = student.boleta || '';
+        
+        if (studentNameLower.includes(searchTermLower) || 
+            studentBoleta.includes(queryText)) {
+          results.push(student);
+        }
+      });
+      
+      setSearchResults(results.slice(0, 20));
+      
+    } catch (error) {
+      console.error('Error buscando alumnos:', error);
+      Alert.alert('Error', 'No se pudo realizar la búsqueda');
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
+  const loadConsultationHistory = async (studentId) => {
+    if (!studentId) return;
+    
+    try {
+      setHistoryLoading(true);
+      
+      const historyQuery = query(
+    collection(db, 'consultation_history'),
+    where('studentId', '==', studentId),
+    where('prefectId', '==', user.uid), // ← Solo consultas de ESTE prefecto
+    orderBy('timestamp', 'desc'),
+    limit(20)
+  );
+      
+      const snapshot = await getDocs(historyQuery);
+      const history = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          date: data.timestamp?.toDate() || new Date()
+        };
+      });
+      
+      setConsultationHistory(history);
+    } catch (error) {
+      console.error('Error cargando historial:', error);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const handleStudentSelect = async (student) => {
+    try {
+      setLoading(true);
+      setScannedStudentData(student);
+      
+      await loadStudentData(student.boleta, student);
+      await registerConsultation(student.boleta, student.name, 'manual_search');
+      
+      setShowSearch(false);
+      setShowMenu(true);
+    } catch (error) {
+      console.error('Error seleccionando estudiante:', error);
+      Alert.alert('Error', 'No se pudieron cargar los datos del estudiante');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const simulateQRScan = () => {
     if (scanCooldown) {
       return;
@@ -235,6 +358,18 @@ export default function App() {
       setScanCooldown(false);
       lastScannedData.current = '';
     }, 2000);
+  };
+
+  const handleSearchChange = (text) => {
+    setSearchQuery(text);
+    
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+    
+    searchTimeoutRef.current = setTimeout(() => {
+      searchStudents(text);
+    }, 300);
   };
 
   function toggleCameraFacing() {
@@ -255,6 +390,23 @@ export default function App() {
     lastScannedData.current = '';
   }
 
+  function openSearchScreen() {
+    setShowMenu(false);
+    setShowSearch(true);
+    setSearchQuery('');
+    setSearchResults([]);
+  }
+
+  function openHistoryScreen() {
+    if (!scannedStudentData) {
+      Alert.alert('Información', 'Primero debes seleccionar un alumno');
+      return;
+    }
+    loadConsultationHistory(scannedStudentData.boleta);
+    setShowMenu(false);
+    setShowHistory(true);
+  }
+
   function openInfoScreen() {
     setShowMenu(false);
     setShowInfo(true);
@@ -262,6 +414,8 @@ export default function App() {
 
   function goBackToMenu() {
     setShowInfo(false);
+    setShowSearch(false);
+    setShowHistory(false);
     setShowMenu(true);
   }
 
@@ -277,9 +431,23 @@ export default function App() {
       setAccreditedSubjects([]);
       setScanCooldown(false);
       lastScannedData.current = '';
+      setSearchQuery('');
+      setSearchResults([]);
+      setConsultationHistory([]);
     } catch (error) {
       console.error('Error al cerrar sesión:', error);
     }
+  };
+
+  const formatDate = (date) => {
+    if (!date) return '';
+    return date.toLocaleDateString('es-MX', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
   };
 
   if (showLogin) {
@@ -324,6 +492,140 @@ export default function App() {
           
           <Text style={styles.loginHint}>Usa el email y contraseña creados en Firebase Auth</Text>
         </View>
+      </View>
+    );
+  }
+
+  if (showSearch) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.backButton} onPress={goBackToMenu}>
+            <Ionicons name="arrow-back" size={24} color="#000" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Buscar Alumno</Text>
+          <View style={styles.placeholder} />
+        </View>
+        
+        <View style={styles.searchContent}>
+          <View style={styles.searchBox}>
+            <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Buscar por nombre o boleta..."
+              placeholderTextColor="#999"
+              value={searchQuery}
+              onChangeText={handleSearchChange}
+              autoCapitalize="words"
+              autoFocus
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => {
+                setSearchQuery('');
+                setSearchResults([]);
+              }}>
+                <Ionicons name="close-circle" size={20} color="#666" />
+              </TouchableOpacity>
+            )}
+          </View>
+          
+          {searchLoading ? (
+            <View style={styles.loadingCenter}>
+              <ActivityIndicator size="large" color="#8B2453" />
+              <Text style={styles.loadingText}>Buscando...</Text>
+            </View>
+          ) : searchResults.length > 0 ? (
+            <FlatList
+              data={searchResults}
+              keyExtractor={(item) => item.id}
+              style={styles.resultsList}
+              renderItem={({ item }) => (
+                <TouchableOpacity 
+                  style={styles.resultItem}
+                  onPress={() => handleStudentSelect(item)}
+                >
+                  <View style={styles.resultContent}>
+                    <Text style={styles.resultName}>{item.name}</Text>
+                    <Text style={styles.resultDetails}>Boleta: {item.boleta}</Text>
+                    <Text style={styles.resultDetails}>Grupo: {item.groupId?.replace('group_', '') || 'N/A'}</Text>
+                    <Text style={styles.resultDetails}>Carrera: {item.career || 'No especificada'}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color="#8B2453" />
+                </TouchableOpacity>
+              )}
+            />
+          ) : searchQuery.length >= 2 ? (
+            <View style={styles.noResults}>
+              <Ionicons name="search-outline" size={50} color="#CCC" />
+              <Text style={styles.noResultsText}>No se encontraron resultados</Text>
+              <Text style={styles.noResultsSubtext}>Intenta con otro nombre o boleta</Text>
+            </View>
+          ) : (
+            <View style={styles.searchHint}>
+              <Ionicons name="information-circle-outline" size={30} color="#8B2453" />
+              <Text style={styles.searchHintText}>
+                Escribe al menos 2 caracteres para buscar
+              </Text>
+              <Text style={styles.searchHintSubtext}>
+                Puedes buscar por nombre del alumno o número de boleta
+              </Text>
+            </View>
+          )}
+        </View>
+      </View>
+    );
+  }
+
+  if (showHistory) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.backButton} onPress={goBackToMenu}>
+            <Ionicons name="arrow-back" size={24} color="#000" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Historial de Consultas</Text>
+          <View style={styles.placeholder} />
+        </View>
+        
+        <ScrollView style={styles.historyContent}>
+          <View style={styles.historyStudentInfo}>
+            <Text style={styles.historyStudentName}>{scannedStudentData?.name}</Text>
+            <Text style={styles.historyStudentBoleta}>Boleta: {scannedStudentData?.boleta}</Text>
+            <Text style={styles.historyTotalConsultations}>
+              Total de consultas: {consultationHistory.length}
+            </Text>
+          </View>
+          
+          {historyLoading ? (
+            <View style={styles.loadingCenter}>
+              <ActivityIndicator size="large" color="#8B2453" />
+              <Text style={styles.loadingText}>Cargando historial...</Text>
+            </View>
+          ) : consultationHistory.length > 0 ? (
+            consultationHistory.map((item, index) => (
+              <View key={item.id} style={styles.historyItem}>
+                <View style={styles.historyHeader}>
+                  <Text style={styles.historyDate}>{formatDate(item.date)}</Text>
+                  <View style={styles.historyTypeBadge}>
+                    <Text style={styles.historyTypeText}>
+                      {item.consultationType === 'qr_scan' ? 'QR' : 'Manual'}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.historyPrefect}>
+                  Prefecto: {item.prefectEmail || 'Desconocido'}
+                </Text>
+                <Text style={styles.historyDetails}>{item.details}</Text>
+              </View>
+            ))
+          ) : (
+            <View style={styles.noHistory}>
+              <Ionicons name="time-outline" size={50} color="#CCC" />
+              <Text style={styles.noHistoryText}>No hay consultas registradas</Text>
+              <Text style={styles.noHistorySubtext}>Este alumno no ha sido consultado aún</Text>
+            </View>
+          )}
+        </ScrollView>
       </View>
     );
   }
@@ -495,14 +797,24 @@ export default function App() {
             </View>
           ) : (
             <View style={styles.noStudentInfo}>
-              <Text style={styles.noStudentText}>No se ha escaneado ningún estudiante</Text>
-              <Text style={styles.noStudentSubtext}>Escanea un código QR para ver la información</Text>
+              <Text style={styles.noStudentText}>No se ha seleccionado ningún estudiante</Text>
+              <Text style={styles.noStudentSubtext}>Escanea un QR o busca manualmente</Text>
             </View>
           )}
+          
+          <TouchableOpacity style={styles.menuButton} onPress={openSearchScreen}>
+            <Text style={styles.menuButtonText}>Buscar Alumno Manualmente</Text>
+          </TouchableOpacity>
           
           <TouchableOpacity style={styles.menuButton} onPress={openInfoScreen} disabled={!scannedStudentData}>
             <Text style={[styles.menuButtonText, !scannedStudentData && styles.disabledButtonText]}>
               Ver Información del Alumno
+            </Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity style={styles.menuButton} onPress={openHistoryScreen} disabled={!scannedStudentData}>
+            <Text style={[styles.menuButtonText, !scannedStudentData && styles.disabledButtonText]}>
+              Ver Historial de Consultas
             </Text>
           </TouchableOpacity>
           
@@ -754,10 +1066,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#666',
     marginBottom: 5,
+    textAlign: 'center',
   },
   noStudentSubtext: {
     fontSize: 14,
     color: '#999',
+    textAlign: 'center',
   },
   menuButton: {
     backgroundColor: 'white',
@@ -809,6 +1123,187 @@ const styles = StyleSheet.create({
     color: '#666',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  searchContent: {
+    flex: 1,
+    padding: 20,
+  },
+  searchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F5F5F5',
+    borderRadius: 10,
+    paddingHorizontal: 15,
+    paddingVertical: 12,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#DDD',
+  },
+  searchIcon: {
+    marginRight: 10,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 16,
+    color: '#000',
+  },
+  loadingCenter: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 10,
+    color: '#8B2453',
+    fontSize: 16,
+  },
+  resultsList: {
+    flex: 1,
+  },
+  resultItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8F8F8',
+    borderRadius: 10,
+    padding: 15,
+    marginBottom: 10,
+    borderLeftWidth: 3,
+    borderLeftColor: '#8B2453',
+  },
+  resultContent: {
+    flex: 1,
+  },
+  resultName: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#000',
+    marginBottom: 5,
+  },
+  resultDetails: {
+    fontSize: 12,
+    color: '#666',
+    marginBottom: 2,
+  },
+  noResults: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 40,
+  },
+  noResultsText: {
+    fontSize: 18,
+    color: '#666',
+    marginTop: 20,
+    marginBottom: 10,
+  },
+  noResultsSubtext: {
+    fontSize: 14,
+    color: '#999',
+    textAlign: 'center',
+  },
+  searchHint: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 40,
+  },
+  searchHintText: {
+    fontSize: 16,
+    color: '#8B2453',
+    marginTop: 20,
+    marginBottom: 10,
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  searchHintSubtext: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+  },
+  historyContent: {
+    flex: 1,
+    padding: 20,
+  },
+  historyStudentInfo: {
+    backgroundColor: '#F8F8F8',
+    padding: 15,
+    borderRadius: 10,
+    marginBottom: 20,
+    borderLeftWidth: 4,
+    borderLeftColor: '#8B2453',
+  },
+  historyStudentName: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#000',
+    marginBottom: 5,
+  },
+  historyStudentBoleta: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 5,
+  },
+  historyTotalConsultations: {
+    fontSize: 14,
+    color: '#8B2453',
+    fontWeight: 'bold',
+  },
+  historyItem: {
+    backgroundColor: '#F8F8F8',
+    borderRadius: 10,
+    padding: 15,
+    marginBottom: 10,
+    borderLeftWidth: 3,
+    borderLeftColor: '#8B2453',
+  },
+  historyHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 5,
+  },
+  historyDate: {
+    fontSize: 12,
+    color: '#666',
+    fontWeight: '500',
+  },
+  historyTypeBadge: {
+    backgroundColor: '#8B2453',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  historyTypeText: {
+    color: 'white',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+  historyPrefect: {
+    fontSize: 13,
+    color: '#333',
+    marginBottom: 5,
+  },
+  historyDetails: {
+    fontSize: 12,
+    color: '#666',
+    fontStyle: 'italic',
+  },
+  noHistory: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 40,
+  },
+  noHistoryText: {
+    fontSize: 18,
+    color: '#666',
+    marginTop: 20,
+    marginBottom: 10,
+  },
+  noHistorySubtext: {
+    fontSize: 14,
+    color: '#999',
+    textAlign: 'center',
   },
   infoContent: {
     flex: 1,
@@ -1035,15 +1530,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: '50%',
     alignItems: 'center',
-  },
-  loadingText: {
-    color: 'white',
-    marginTop: 10,
-    fontSize: 16,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 10,
   },
   cooldownContainer: {
     position: 'absolute',
