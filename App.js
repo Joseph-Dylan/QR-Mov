@@ -3,7 +3,6 @@ import { StyleSheet, Text, View, TouchableOpacity, Alert, TextInput, ScrollView,
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 
-// Firebase imports
 import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
 import { auth, db } from './utils/firebase';
 import { collection, doc, getDoc, getDocs, query, where, addDoc } from 'firebase/firestore';
@@ -16,15 +15,16 @@ export default function App() {
   const [showCamera, setShowCamera] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [showLogin, setShowLogin] = useState(true);
-  const [showSchedule, setShowSchedule] = useState(false);
-  const [showAcademic, setShowAcademic] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [scannedStudentData, setScannedStudentData] = useState(null);
   const [studentSchedule, setStudentSchedule] = useState([]);
   const [accreditedSubjects, setAccreditedSubjects] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [scanCooldown, setScanCooldown] = useState(false);
   const cameraRef = useRef(null);
+  const lastScannedData = useRef('');
 
   useEffect(() => {
     (async () => {
@@ -34,15 +34,12 @@ export default function App() {
     })();
   }, [permission]);
 
-  // Verificar si hay sesión activa
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
-        // Usuario ya está loggeado
         setShowLogin(false);
         setShowMenu(true);
       } else {
-        // No hay usuario loggeado
         setShowLogin(true);
         setShowMenu(false);
       }
@@ -51,7 +48,6 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  // Función de login SOLO con Firebase Auth
   const handleLogin = async () => {
     if (!username || !password) {
       Alert.alert('Error', 'Por favor ingresa usuario y contraseña');
@@ -60,15 +56,12 @@ export default function App() {
 
     try {
       setLoading(true);
-      
-      // Login directo con Firebase Auth
       const userCredential = await signInWithEmailAndPassword(
         auth, 
         username, 
         password
       );
       
-      // Si llega aquí, el login fue exitoso
       console.log('Usuario autenticado:', userCredential.user.uid);
       setShowLogin(false);
       setShowMenu(true);
@@ -93,30 +86,53 @@ export default function App() {
     }
   };
 
-  // ✅ FUNCIÓN MEJORADA PARA ESCANEAR QR Y CONSULTAR FIREBASE
   const handleBarCodeScanned = async ({ data }) => {
+    if (scanCooldown || data === lastScannedData.current) {
+      return;
+    }
+
+    setScanCooldown(true);
+    lastScannedData.current = data;
+    
     console.log("QR escaneado:", data);
     
     try {
       setLoading(true);
       
-      // Extraer la boleta de la URL
-      const url = new URL(data);
-      const boletaParam = url.searchParams.get('boleta');
+      let boleta;
       
-      if (!boletaParam) {
-        Alert.alert('Error', 'No se encontró la boleta en el QR');
-        return;
+      try {
+        const url = new URL(data);
+        const boletaParam = url.searchParams.get('boleta');
+        if (boletaParam) {
+          boleta = boletaParam;
+        } else {
+          throw new Error('No tiene parámetro boleta');
+        }
+      } catch (error) {
+        const match = data.match(/\d{10}/);
+        if (match) {
+          boleta = match[0];
+        } else {
+          Alert.alert('QR Inválido', 'El código QR no contiene una boleta válida');
+          setTimeout(() => {
+            setScanCooldown(false);
+            lastScannedData.current = '';
+          }, 1000);
+          return;
+        }
       }
 
-      const boleta = boletaParam;
       console.log("Buscando estudiante con boleta:", boleta);
 
-      // 1. Buscar estudiante en Firebase
       const studentDoc = await getDoc(doc(db, 'students', boleta));
       
       if (!studentDoc.exists()) {
-        Alert.alert('Error', `No se encontró al alumno con boleta: ${boleta}`);
+        Alert.alert('No Encontrado', `No se encontró al alumno con boleta: ${boleta}`);
+        setTimeout(() => {
+          setScanCooldown(false);
+          lastScannedData.current = '';
+        }, 1000);
         return;
       }
 
@@ -124,7 +140,6 @@ export default function App() {
       console.log("Datos del estudiante:", studentData);
       setScannedStudentData(studentData);
 
-      // 2. Obtener horario del grupo
       const scheduleQuery = query(
         collection(db, 'group_schedules'), 
         where('groupId', '==', studentData.groupId)
@@ -137,11 +152,9 @@ export default function App() {
       
       console.log("Horarios encontrados:", scheduleData);
       
-      // Organizar horario
       const organizedSchedule = organizeScheduleByTime(scheduleData);
       setStudentSchedule(organizedSchedule);
 
-      // 3. Obtener materias acreditadas
       const accreditedQuery = query(
         collection(db, 'accredited_subjects'),
         where('studentId', '==', boleta)
@@ -151,7 +164,6 @@ export default function App() {
       console.log("Materias acreditadas:", accreditedData);
       setAccreditedSubjects(accreditedData);
 
-      // 4. Crear registro del escaneo
       await addDoc(collection(db, 'records'), {
         studentId: boleta,
         studentName: studentData.name,
@@ -162,19 +174,22 @@ export default function App() {
         justified: false
       });
 
-      // ✅ DIRECTO AL MENÚ PRINCIPAL SIN ALERT INTERMEDIO
       setShowCamera(false);
       setShowMenu(true);
 
     } catch (error) {
       console.error("Error procesando QR:", error);
-      Alert.alert('Error', 'No se pudieron cargar los datos desde Firebase');
+      Alert.alert('Error', 'Error al procesar los datos');
     } finally {
       setLoading(false);
+      
+      setTimeout(() => {
+        setScanCooldown(false);
+        lastScannedData.current = '';
+      }, 2000);
     }
   };
 
-  // ✅ ORGANIZAR HORARIO
   const organizeScheduleByTime = (scheduleData) => {
     const timeSlots = {};
     
@@ -205,11 +220,21 @@ export default function App() {
     return Object.values(timeSlots).sort((a, b) => a.time.localeCompare(b.time));
   };
 
-  // ✅ SIMULAR ESCANEO PARA PRUEBAS
   const simulateQRScan = () => {
+    if (scanCooldown) {
+      return;
+    }
+    
+    setScanCooldown(true);
+    lastScannedData.current = '2024090001';
     handleBarCodeScanned({ 
       data: 'https://coatl.cecyt9.ipn.mx/app/qr_system/accessprocess.php?boleta=2024090001' 
     });
+    
+    setTimeout(() => {
+      setScanCooldown(false);
+      lastScannedData.current = '';
+    }, 2000);
   };
 
   function toggleCameraFacing() {
@@ -219,26 +244,24 @@ export default function App() {
   function openCamera() {
     setShowCamera(true);
     setShowMenu(false);
+    setScanCooldown(false);
+    lastScannedData.current = '';
   }
 
   function closeCamera() {
     setShowCamera(false);
     setShowMenu(true);
+    setScanCooldown(false);
+    lastScannedData.current = '';
   }
 
-  function openScheduleScreen() {
+  function openInfoScreen() {
     setShowMenu(false);
-    setShowSchedule(true);
-  }
-
-  function openAcademicScreen() {
-    setShowMenu(false);
-    setShowAcademic(true);
+    setShowInfo(true);
   }
 
   function goBackToMenu() {
-    setShowSchedule(false);
-    setShowAcademic(false);
+    setShowInfo(false);
     setShowMenu(true);
   }
 
@@ -252,12 +275,13 @@ export default function App() {
       setScannedStudentData(null);
       setStudentSchedule([]);
       setAccreditedSubjects([]);
+      setScanCooldown(false);
+      lastScannedData.current = '';
     } catch (error) {
       console.error('Error al cerrar sesión:', error);
     }
   };
 
-  // Pantalla de Login
   if (showLogin) {
     return (
       <View style={styles.container}>
@@ -304,117 +328,18 @@ export default function App() {
     );
   }
 
-  // Pantalla de Horario (SOLO DATOS REALES DE FIREBASE)
-  if (showSchedule) {
+  if (showInfo) {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
           <TouchableOpacity style={styles.backButton} onPress={goBackToMenu}>
             <Ionicons name="arrow-back" size={24} color="#000" />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Horario Semanal</Text>
+          <Text style={styles.headerTitle}>Información del Alumno</Text>
           <View style={styles.placeholder} />
         </View>
         
-        <ScrollView style={styles.scheduleContent}>
-          {/* Información del estudiante */}
-          {scannedStudentData && (
-            <View style={styles.studentInfo}>
-              <Text style={styles.studentName}>{scannedStudentData.name}</Text>
-              <Text style={styles.studentDetails}>
-                Boleta: {scannedStudentData.boleta} | Grupo: {scannedStudentData.groupId?.replace('group_', '')}
-              </Text>
-              <Text style={styles.studentDetails}>
-              Carrera: {scannedStudentData.career || 'No especificada'}
-            </Text>
-            </View>
-          )}
-
-          <View style={styles.scheduleTable}>
-            {/* Header de días */}
-            <View style={styles.tableHeader}>
-              <View style={styles.timeHeaderCell}>
-                <Text style={styles.tableHeaderText}>HORA</Text>
-              </View>
-              <View style={styles.dayCell}>
-                <Text style={styles.tableHeaderText}>LUN</Text>
-              </View>
-              <View style={styles.dayCell}>
-                <Text style={styles.tableHeaderText}>MAR</Text>
-              </View>
-              <View style={styles.dayCell}>
-                <Text style={styles.tableHeaderText}>MIÉ</Text>
-              </View>
-              <View style={styles.dayCell}>
-                <Text style={styles.tableHeaderText}>JUE</Text>
-              </View>
-              <View style={styles.dayCell}>
-                <Text style={styles.tableHeaderText}>VIE</Text>
-              </View>
-            </View>
-            
-            {/* Filas de horarios - SOLO DATOS REALES */}
-            {studentSchedule.length > 0 ? (
-              studentSchedule.map((row, index) => (
-                <View key={index} style={styles.tableRow}>
-                  <View style={styles.timeCell}>
-                    <Text style={styles.timeText}>{row.time}</Text>
-                  </View>
-                  <View style={row.lun === '-' ? styles.emptyCell : styles.subjectCell}>
-                    <Text style={styles.subjectText}>{row.lun}</Text>
-                  </View>
-                  <View style={row.mar === '-' ? styles.emptyCell : styles.subjectCell}>
-                    <Text style={styles.subjectText}>{row.mar}</Text>
-                  </View>
-                  <View style={row.mie === '-' ? styles.emptyCell : styles.subjectCell}>
-                    <Text style={styles.subjectText}>{row.mie}</Text>
-                  </View>
-                  <View style={row.jue === '-' ? styles.emptyCell : styles.subjectCell}>
-                    <Text style={styles.subjectText}>{row.jue}</Text>
-                  </View>
-                  <View style={row.vie === '-' ? styles.emptyCell : styles.subjectCell}>
-                    <Text style={styles.subjectText}>{row.vie}</Text>
-                  </View>
-                </View>
-              ))
-            ) : (
-              <View style={styles.noData}>
-                <Text style={styles.noDataText}>No hay horario disponible</Text>
-              </View>
-            )}
-          </View>
-
-          <View style={styles.espasSection}>
-            <Text style={styles.espasTitle}>Materias Acreditadas</Text>
-            {accreditedSubjects.length > 0 ? (
-              accreditedSubjects.map((subject, index) => (
-                <View key={index} style={styles.espaItem}>
-                  <Text style={styles.espaText}>• {subject.subjectName}</Text>
-                </View>
-              ))
-            ) : (
-              <Text style={styles.noDataText}>No hay materias acreditadas</Text>
-            )}
-          </View>
-        </ScrollView>
-      </View>
-    );
-  }
-
-  // Pantalla de Situación Académica (SOLO DATOS REALES DE FIREBASE)
-  if (showAcademic) {
-    return (
-      <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity style={styles.backButton} onPress={goBackToMenu}>
-            <Ionicons name="arrow-back" size={24} color="#000" />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Situación Académica</Text>
-          <View style={styles.placeholder} />
-        </View>
-        
-        <ScrollView style={styles.academicContent}>
-          {/* Información del estudiante */}
+        <ScrollView style={styles.infoContent}>
           {scannedStudentData && (
             <View style={styles.studentInfo}>
               <Text style={styles.studentName}>{scannedStudentData.name}</Text>
@@ -422,54 +347,110 @@ export default function App() {
                 Boleta: {scannedStudentData.boleta}
               </Text>
               <Text style={styles.studentDetails}>
+                Grupo: {scannedStudentData.groupId?.replace('group_', '')}
+              </Text>
+              <Text style={styles.studentDetails}>
                 Carrera: {scannedStudentData.career || 'No especificada'}
               </Text>
             </View>
           )}
 
-          {/* SOLO DATOS QUE EXISTEN EN FIREBASE */}
-          <View style={styles.infoCard}>
-            <Text style={styles.infoLabel}>Situación Actual:</Text>
-            <Text style={styles.infoValue}>
-              {scannedStudentData?.academicStatus === 'active' ? 'Regular' : 
-               scannedStudentData?.academicStatus || 'No especificado'}
-            </Text>
-          </View>
-          
-          <View style={styles.infoCard}>
-            <Text style={styles.infoLabel}>Grupo:</Text>
-            <Text style={styles.infoValue}>
-              {scannedStudentData?.groupId?.replace('group_', '') || 'No especificado'}
-            </Text>
-          </View>
-          
-          <View style={styles.infoCard}>
-            <Text style={styles.infoLabel}>Retardos:</Text>
-            <Text style={styles.infoValue}>{scannedStudentData?.delays || 0}</Text>
-          </View>
-
-          <View style={styles.infoCard}>
-            <Text style={styles.infoLabel}>Sin Credencial:</Text>
-            <Text style={styles.infoValue}>{scannedStudentData?.withoutCredential || 0}</Text>
-          </View>
-
-          <View style={styles.infoCard}>
-            <Text style={styles.infoLabel}>Estado:</Text>
-            <Text style={styles.infoValue}>
-              {scannedStudentData?.blocked ? 'BLOQUEADO' : 'ACTIVO'}
-            </Text>
-          </View>
-
-          <View style={styles.infoCard}>
-            <Text style={styles.infoLabel}>Puerta Abierta:</Text>
-            <Text style={styles.infoValue}>
-              {scannedStudentData?.openDoor ? 'SÍ' : 'NO'}
-            </Text>
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Situación Académica</Text>
+            
+            <View style={styles.infoGrid}>
+              <View style={styles.infoItem}>
+                <Text style={styles.infoLabel}>Situación:</Text>
+                <Text style={styles.infoValue}>
+                  {scannedStudentData?.academicStatus === 'active' ? 'Regular' : 
+                   scannedStudentData?.academicStatus || 'No especificado'}
+                </Text>
+              </View>
+              
+              <View style={styles.infoItem}>
+                <Text style={styles.infoLabel}>Estado:</Text>
+                <Text style={[styles.infoValue, scannedStudentData?.blocked ? styles.blockedText : styles.activeText]}>
+                  {scannedStudentData?.blocked ? 'BLOQUEADO' : 'ACTIVO'}
+                </Text>
+              </View>
+              
+              <View style={styles.infoItem}>
+                <Text style={styles.infoLabel}>Retardos:</Text>
+                <Text style={styles.infoValue}>{scannedStudentData?.delays || 0}</Text>
+              </View>
+              
+              <View style={styles.infoItem}>
+                <Text style={styles.infoLabel}>Sin Credencial:</Text>
+                <Text style={styles.infoValue}>{scannedStudentData?.withoutCredential || 0}</Text>
+              </View>
+              
+              <View style={styles.infoItem}>
+                <Text style={styles.infoLabel}>Puerta Abierta:</Text>
+                <Text style={styles.infoValue}>
+                  {scannedStudentData?.openDoor ? 'SÍ' : 'NO'}
+                </Text>
+              </View>
+            </View>
           </View>
 
-          {/* Materias acreditadas */}
-          <View style={styles.espasSection}>
-            <Text style={styles.espasTitle}>Materias Acreditadas</Text>
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Horario Semanal</Text>
+            
+            <View style={styles.scheduleTable}>
+              <View style={styles.tableHeader}>
+                <View style={styles.timeHeaderCell}>
+                  <Text style={styles.tableHeaderText}>HORA</Text>
+                </View>
+                <View style={styles.dayCell}>
+                  <Text style={styles.tableHeaderText}>LUN</Text>
+                </View>
+                <View style={styles.dayCell}>
+                  <Text style={styles.tableHeaderText}>MAR</Text>
+                </View>
+                <View style={styles.dayCell}>
+                  <Text style={styles.tableHeaderText}>MIÉ</Text>
+                </View>
+                <View style={styles.dayCell}>
+                  <Text style={styles.tableHeaderText}>JUE</Text>
+                </View>
+                <View style={styles.dayCell}>
+                  <Text style={styles.tableHeaderText}>VIE</Text>
+                </View>
+              </View>
+              
+              {studentSchedule.length > 0 ? (
+                studentSchedule.map((row, index) => (
+                  <View key={index} style={styles.tableRow}>
+                    <View style={styles.timeCell}>
+                      <Text style={styles.timeText}>{row.time}</Text>
+                    </View>
+                    <View style={row.lun === '-' ? styles.emptyCell : styles.subjectCell}>
+                      <Text style={styles.subjectText}>{row.lun}</Text>
+                    </View>
+                    <View style={row.mar === '-' ? styles.emptyCell : styles.subjectCell}>
+                      <Text style={styles.subjectText}>{row.mar}</Text>
+                    </View>
+                    <View style={row.mie === '-' ? styles.emptyCell : styles.subjectCell}>
+                      <Text style={styles.subjectText}>{row.mie}</Text>
+                    </View>
+                    <View style={row.jue === '-' ? styles.emptyCell : styles.subjectCell}>
+                      <Text style={styles.subjectText}>{row.jue}</Text>
+                    </View>
+                    <View style={row.vie === '-' ? styles.emptyCell : styles.subjectCell}>
+                      <Text style={styles.subjectText}>{row.vie}</Text>
+                    </View>
+                  </View>
+                ))
+              ) : (
+                <View style={styles.noData}>
+                  <Text style={styles.noDataText}>No hay horario disponible</Text>
+                </View>
+              )}
+            </View>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Materias Acreditadas</Text>
             {accreditedSubjects.length > 0 ? (
               accreditedSubjects.map((subject, index) => (
                 <View key={index} style={styles.espaItem}>
@@ -490,49 +471,55 @@ export default function App() {
     );
   }
 
-  // Pantalla del menú después del QR
-if (showMenu) {
-  return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.appTitle}>QR PASS APP</Text>
-      </View>
-      
-      <View style={styles.menuContent}>
-        <Text style={styles.menuTitle}>Menú Principal</Text>
+  if (showMenu) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.appTitle}>QR PASS APP</Text>
+        </View>
         
-        {/* Información del estudiante escaneado */}
-        {scannedStudentData && (
-          <View style={styles.scannedStudentInfo}>
-            <Text style={styles.scannedStudentName}>{scannedStudentData.name}</Text>
-            <Text style={styles.scannedStudentBoleta}>Boleta: {scannedStudentData.boleta}</Text>
-            <Text style={styles.scannedStudentGroup}>Grupo: {scannedStudentData.groupId?.replace('group_', '')}</Text>
-            {/* AGREGAR ESTA LÍNEA: */}
-            <Text style={styles.scannedStudentCareer}>Carrera: {scannedStudentData.career || 'No especificada'}</Text>
-          </View>
-        )}
-        
-        <TouchableOpacity style={styles.menuButton} onPress={openScheduleScreen}>
-          <Text style={styles.menuButtonText}>Visualizar Horario</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity style={styles.menuButton} onPress={openAcademicScreen}>
-          <Text style={styles.menuButtonText}>Situación Académica</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity style={styles.thirdButton} onPress={openCamera}>
-          <Text style={styles.thirdButtonText}>Escanear Nuevo QR</Text>
-        </TouchableOpacity>
+        <View style={styles.menuContent}>
+          <Text style={styles.menuTitle}>Menú Principal</Text>
+          
+          {scannedStudentData ? (
+            <View style={styles.scannedStudentInfo}>
+              <Text style={styles.scannedStudentName}>{scannedStudentData.name}</Text>
+              <Text style={styles.scannedStudentBoleta}>Boleta: {scannedStudentData.boleta}</Text>
+              <Text style={styles.scannedStudentGroup}>Grupo: {scannedStudentData.groupId?.replace('group_', '')}</Text>
+              <Text style={styles.scannedStudentCareer}>Carrera: {scannedStudentData.career || 'No especificada'}</Text>
+              <View style={styles.statusBadge}>
+                <Text style={scannedStudentData?.blocked ? styles.blockedBadgeText : styles.activeBadgeText}>
+                  {scannedStudentData?.blocked ? 'BLOQUEADO' : 'ACTIVO'}
+                </Text>
+              </View>
+            </View>
+          ) : (
+            <View style={styles.noStudentInfo}>
+              <Text style={styles.noStudentText}>No se ha escaneado ningún estudiante</Text>
+              <Text style={styles.noStudentSubtext}>Escanea un código QR para ver la información</Text>
+            </View>
+          )}
+          
+          <TouchableOpacity style={styles.menuButton} onPress={openInfoScreen} disabled={!scannedStudentData}>
+            <Text style={[styles.menuButtonText, !scannedStudentData && styles.disabledButtonText]}>
+              Ver Información del Alumno
+            </Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity style={styles.thirdButton} onPress={openCamera}>
+            <Text style={styles.thirdButtonText}>
+              {scannedStudentData ? 'Escanear Otro QR' : 'Escanear QR'}
+            </Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity style={styles.logoutButton} onPress={goBackToHome}>
-          <Text style={styles.logoutButtonText}>Cerrar Sesión</Text>
-        </TouchableOpacity>
+          <TouchableOpacity style={styles.logoutButton} onPress={goBackToHome}>
+            <Text style={styles.logoutButtonText}>Cerrar Sesión</Text>
+          </TouchableOpacity>
+        </View>
       </View>
-    </View>
-  );
-}
+    );
+  }
 
-  // Pantalla de cámara
   if (showCamera && permission) {
     return (
       <View style={styles.container}>
@@ -540,13 +527,12 @@ if (showMenu) {
           style={styles.camera}
           facing={facing}
           ref={cameraRef}
-          onBarcodeScanned={loading ? undefined : handleBarCodeScanned}
+          onBarcodeScanned={scanCooldown ? undefined : handleBarCodeScanned}
           barcodeScannerSettings={{
             barcodeTypes: ["qr"]
           }}
         />
         
-        {/* Overlay de la cámara */}
         <View style={styles.cameraOverlay}>
           <View style={styles.cameraHeader}>
             <TouchableOpacity style={styles.closeButton} onPress={closeCamera}>
@@ -568,6 +554,12 @@ if (showMenu) {
               </View>
             )}
             
+            {scanCooldown && !loading && (
+              <View style={styles.cooldownContainer}>
+                <Text style={styles.cooldownText}>Procesando...</Text>
+              </View>
+            )}
+            
             <View style={styles.scanFrame}>
               <View style={styles.scanCornerTL} />
               <View style={styles.scanCornerTR} />
@@ -576,8 +568,14 @@ if (showMenu) {
             </View>
             
             <View style={styles.cameraControls}>
-              <TouchableOpacity style={styles.simulateButton} onPress={simulateQRScan}>
-                <Text style={styles.simulateButtonText}>Simular Escaneo (2024090001)</Text>
+              <TouchableOpacity 
+                style={[styles.simulateButton, scanCooldown && styles.simulateButtonDisabled]} 
+                onPress={simulateQRScan}
+                disabled={scanCooldown}
+              >
+                <Text style={styles.simulateButtonText}>
+                  {scanCooldown ? 'Esperando...' : 'Simular Escaneo'}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -589,7 +587,6 @@ if (showMenu) {
   return null;
 }
 
-// ESTILOS COMPLETOS
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -717,6 +714,50 @@ const styles = StyleSheet.create({
   scannedStudentGroup: {
     fontSize: 14,
     color: '#666',
+    marginBottom: 3,
+  },
+  scannedStudentCareer: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 10,
+  },
+  statusBadge: {
+    alignSelf: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: '#F0F0F0',
+    marginTop: 5,
+  },
+  activeBadgeText: {
+    color: '#27ae60',
+    fontWeight: 'bold',
+    fontSize: 12,
+  },
+  blockedBadgeText: {
+    color: '#e74c3c',
+    fontWeight: 'bold',
+    fontSize: 12,
+  },
+  noStudentInfo: {
+    backgroundColor: '#F9F9F9',
+    borderRadius: 10,
+    padding: 20,
+    marginBottom: 30,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#EEE',
+    borderStyle: 'dashed',
+    width: '100%',
+  },
+  noStudentText: {
+    fontSize: 16,
+    color: '#666',
+    marginBottom: 5,
+  },
+  noStudentSubtext: {
+    fontSize: 14,
+    color: '#999',
   },
   menuButton: {
     backgroundColor: 'white',
@@ -733,6 +774,9 @@ const styles = StyleSheet.create({
     color: '#8B2453',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  disabledButtonText: {
+    color: '#AAA',
   },
   thirdButton: {
     backgroundColor: '#8B2453',
@@ -766,21 +810,21 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
   },
-  scheduleContent: {
+  infoContent: {
     flex: 1,
     backgroundColor: '#FFFFFF',
-    padding: 10,
+    padding: 20,
   },
   studentInfo: {
     backgroundColor: '#F8F8F8',
     padding: 15,
     borderRadius: 10,
-    marginBottom: 15,
+    marginBottom: 20,
     borderLeftWidth: 4,
     borderLeftColor: '#8B2453',
   },
   studentName: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 'bold',
     color: '#000',
     marginBottom: 5,
@@ -788,13 +832,57 @@ const styles = StyleSheet.create({
   studentDetails: {
     fontSize: 14,
     color: '#666',
+    marginBottom: 2,
+  },
+  section: {
+    marginBottom: 25,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#000000',
+    marginBottom: 15,
+    paddingBottom: 5,
+    borderBottomWidth: 2,
+    borderBottomColor: '#8B2453',
+  },
+  infoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  infoItem: {
+    width: '48%',
+    backgroundColor: '#F5F5F5',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 10,
+    borderLeftWidth: 3,
+    borderLeftColor: '#8B2453',
+  },
+  infoLabel: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 4,
+  },
+  infoValue: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000000',
+  },
+  activeText: {
+    color: '#27ae60',
+    fontWeight: 'bold',
+  },
+  blockedText: {
+    color: '#e74c3c',
+    fontWeight: 'bold',
   },
   scheduleTable: {
     borderWidth: 1,
     borderColor: '#DDD',
     borderRadius: 10,
     overflow: 'hidden',
-    marginBottom: 20,
   },
   tableHeader: {
     flexDirection: 'row',
@@ -866,21 +954,13 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: '#333',
   },
-  espasSection: {
-    backgroundColor: '#F5F5F5',
-    padding: 15,
-    borderRadius: 10,
-    borderLeftWidth: 4,
-    borderLeftColor: '#8B2453',
-  },
-  espasTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 10,
-    color: '#000',
-  },
   espaItem: {
     marginBottom: 8,
+    backgroundColor: '#F5F5F5',
+    padding: 12,
+    borderRadius: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: '#8B2453',
   },
   espaText: {
     fontSize: 14,
@@ -893,28 +973,15 @@ const styles = StyleSheet.create({
     marginLeft: 10,
     fontStyle: 'italic',
   },
-  academicContent: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
+  noData: {
     padding: 20,
+    alignItems: 'center',
   },
-  infoCard: {
-    backgroundColor: '#F5F5F5',
-    padding: 20,
-    borderRadius: 12,
-    marginBottom: 15,
-    borderLeftWidth: 4,
-    borderLeftColor: '#8B2453',
-  },
-  infoLabel: {
+  noDataText: {
     color: '#666',
     fontSize: 14,
-    marginBottom: 5,
-  },
-  infoValue: {
-    color: '#000000',
-    fontSize: 18,
-    fontWeight: '600',
+    fontStyle: 'italic',
+    textAlign: 'center',
   },
   camera: {
     flex: 1,
@@ -959,16 +1026,37 @@ const styles = StyleSheet.create({
     fontSize: 16,
     textAlign: 'center',
     marginBottom: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 10,
   },
   loadingContainer: {
-    backgroundColor: 'rgba(255,255,255,0.9)',
-    padding: 20,
-    borderRadius: 10,
+    position: 'absolute',
+    top: '50%',
     alignItems: 'center',
   },
   loadingText: {
+    color: 'white',
     marginTop: 10,
-    color: '#8B2453',
+    fontSize: 16,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  cooldownContainer: {
+    position: 'absolute',
+    top: '40%',
+    alignItems: 'center',
+  },
+  cooldownText: {
+    color: '#FFD700',
+    fontSize: 16,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 10,
     fontWeight: 'bold',
   },
   scanFrame: {
@@ -1031,22 +1119,12 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#591634',
   },
+  simulateButtonDisabled: {
+    backgroundColor: 'rgba(139, 36, 83, 0.5)',
+  },
   simulateButtonText: {
     color: 'white',
     fontSize: 14,
     fontWeight: 'bold',
-  },
-  noData: {
-    padding: 20,
-    alignItems: 'center',
-  },
-  noDataText: {
-    color: '#666',
-    fontSize: 14,
-    fontStyle: 'italic',
-  },
-  scannedStudentCareer: {
-  fontSize: 14,
-  color: '#666',
   },
 });
