@@ -299,13 +299,16 @@ export default function App() {
     try {
       setHistoryLoading(true);
       
+      const user = auth.currentUser;
+      if (!user) return;
+      
       const historyQuery = query(
-    collection(db, 'consultation_history'),
-    where('studentId', '==', studentId),
-    where('prefectId', '==', user.uid), // ← Solo consultas de ESTE prefecto
-    orderBy('timestamp', 'desc'),
-    limit(20)
-  );
+        collection(db, 'consultation_history'),
+        where('studentId', '==', studentId),
+        where('prefectId', '==', user.uid),
+        orderBy('timestamp', 'desc'),
+        limit(20)
+      );
       
       const snapshot = await getDocs(historyQuery);
       const history = snapshot.docs.map(doc => {
@@ -674,16 +677,6 @@ export default function App() {
                 <Text style={[styles.infoValue, scannedStudentData?.blocked ? styles.blockedText : styles.activeText]}>
                   {scannedStudentData?.blocked ? 'BLOQUEADO' : 'ACTIVO'}
                 </Text>
-              </View>
-              
-              <View style={styles.infoItem}>
-                <Text style={styles.infoLabel}>Retardos:</Text>
-                <Text style={styles.infoValue}>{scannedStudentData?.delays || 0}</Text>
-              </View>
-              
-              <View style={styles.infoItem}>
-                <Text style={styles.infoLabel}>Sin Credencial:</Text>
-                <Text style={styles.infoValue}>{scannedStudentData?.withoutCredential || 0}</Text>
               </View>
               
               <View style={styles.infoItem}>
@@ -1347,7 +1340,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   infoItem: {
-    width: '48%',
+    width: '100%',
     backgroundColor: '#F5F5F5',
     padding: 12,
     borderRadius: 8,
